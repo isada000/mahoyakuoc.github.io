@@ -5,6 +5,10 @@
   const SVG_NS = "http://www.w3.org/2000/svg";
   const SVG_W = 1000;
   const SVG_H = 620;
+  const SUPABASE_URL = "https://pzxlsaulqmagxbcthrcg.supabase.co";
+  const SUPABASE_PUBLISHABLE_KEY = "sb_publishable_q6YhjTTRGkR8KKUFuMkWow_TexC5-h-";
+  const SUPABASE_AVATAR_BUCKET = "avatars";
+  const CLOUD_ENABLED = Boolean(SUPABASE_URL && SUPABASE_PUBLISHABLE_KEY);
   const COUNTRIES = ["央", "北", "东", "西", "南"];
   const GENDERS = ["男", "女"];
   const SAGE_STATUSES = ["贤魔", "前贤魔", "非贤魔"];
@@ -68,16 +72,22 @@
   let dragAnimationFrame = 0;
   let pendingDragPoint = null;
   let graphElements = emptyGraphElements();
+  let avatarCleared = false;
+  let cloudSyncTimer = null;
+  let cloudSyncInFlight = false;
+  let cloudSyncAgain = false;
+  let cloudReady = false;
 
   document.addEventListener("DOMContentLoaded", init);
 
-  function init() {
+  async function init() {
     cacheDom();
     bindEvents();
     resetPersonForm();
     resetRelationForm();
     renderAll();
     renderEmptyGraph("请选择中心人物生成关系图");
+    await hydrateFromCloud();
   }
 
   function cacheDom() {
@@ -106,6 +116,7 @@
       if (!file) return;
       try {
         tempAvatarData = await imageFileToDataUrl(file);
+        avatarCleared = false;
         updateAvatarPreview();
       } catch (error) {
         showToast(error.message || "头像读取失败");
@@ -115,6 +126,7 @@
     });
     dom.clearAvatar.addEventListener("click", () => {
       tempAvatarData = "";
+      avatarCleared = true;
       updateAvatarPreview();
     });
 
@@ -216,13 +228,15 @@
     };
   }
 
-  function saveState() {
+  function saveState(options = {}) {
+    const { syncCloud = true } = options;
     state.updatedAt = new Date().toISOString();
     try {
       localStorage.setItem(STORE_KEY, JSON.stringify(state));
     } catch (error) {
       throw new Error("本地存储空间不足。请优先导出 JSON 备份，或减少头像图片数量。");
     }
+    if (syncCloud) scheduleCloudSync();
   }
 
   function renderAll() {
@@ -233,9 +247,301 @@
     if (currentCenterId) renderGraph();
   }
 
+  async function hydrateFromCloud() {
+    if (!CLOUD_ENABLED) return;
+    try {
+      const cloudState = await fetchCloudState();
+      const hasCloudData =
+        cloudState.characters.length ||
+        cloudState.relationships.length ||
+        Object.keys(cloudState.layouts).length;
+      if (hasCloudData) {
+        state = cloudState;
+        cloudReady = true;
+        saveState({ syncCloud: false });
+        renderAll();
+        if (currentCenterId) renderGraph();
+        showToast("已连接 Supabase 云端库");
+        return;
+      }
+      cloudReady = true;
+      if (state.characters.length || state.relationships.length || Object.keys(state.layouts).length) {
+        scheduleCloudSync();
+        showToast("云端库为空，正在上传本地数据");
+      } else {
+        showToast("已连接 Supabase 云端库");
+      }
+    } catch (error) {
+      cloudReady = false;
+      showToast(`云端读取失败，继续使用本地库：${shortError(error)}`);
+    }
+  }
+
+  async function fetchCloudState() {
+    const [charactersRows, relationshipRows, layoutRows] = await Promise.all([
+      cloudRequest("characters?select=*"),
+      cloudRequest("relationships?select=*"),
+      cloudRequest("graph_layouts?select=*")
+    ]);
+    const layouts = {};
+    for (const row of layoutRows || []) {
+      if (!layouts[row.center_id]) {
+        layouts[row.center_id] = {
+          positions: {},
+          updatedAt: row.updated_at || ""
+        };
+      }
+      layouts[row.center_id].positions[row.person_id] = {
+        x: Number(row.x),
+        y: Number(row.y)
+      };
+      if (row.updated_at) layouts[row.center_id].updatedAt = row.updated_at;
+    }
+    return {
+      characters: (charactersRows || []).map(rowToCharacter),
+      relationships: (relationshipRows || []).map(rowToRelation),
+      layouts,
+      updatedAt: new Date().toISOString()
+    };
+  }
+
+  function scheduleCloudSync() {
+    if (!CLOUD_ENABLED) return;
+    clearTimeout(cloudSyncTimer);
+    cloudSyncTimer = setTimeout(() => {
+      syncStateToCloud().catch((error) => {
+        showToast(`云端同步失败：${shortError(error)}`);
+      });
+    }, cloudReady ? 500 : 1200);
+  }
+
+  async function syncStateToCloud() {
+    if (!CLOUD_ENABLED) return;
+    if (cloudSyncInFlight) {
+      cloudSyncAgain = true;
+      return;
+    }
+    cloudSyncInFlight = true;
+    try {
+      await uploadPendingAvatars();
+      await upsertCloudRows("characters", state.characters.map(characterToRow), "id");
+      await upsertCloudRows("relationships", state.relationships.map(relationToRow), "id");
+      await upsertCloudRows("graph_layouts", layoutsToCloudRows(), "center_id,person_id");
+      saveState({ syncCloud: false });
+      cloudReady = true;
+    } finally {
+      cloudSyncInFlight = false;
+      if (cloudSyncAgain) {
+        cloudSyncAgain = false;
+        scheduleCloudSync();
+      }
+    }
+  }
+
+  async function upsertCloudRows(table, rows, onConflict) {
+    if (!rows.length) return;
+    await cloudRequest(`${table}?on_conflict=${encodeURIComponent(onConflict)}`, {
+      method: "POST",
+      headers: {
+        Prefer: "resolution=merge-duplicates,return=minimal"
+      },
+      body: JSON.stringify(rows)
+    });
+  }
+
+  async function deleteCloudRows(table, filter) {
+    if (!CLOUD_ENABLED) return;
+    try {
+      await cloudRequest(`${table}?${filter}`, {
+        method: "DELETE",
+        headers: {
+          Prefer: "return=minimal"
+        }
+      });
+    } catch (error) {
+      showToast(`云端删除失败：${shortError(error)}`);
+    }
+  }
+
+  async function cloudRequest(path, options = {}) {
+    const headers = {
+      apikey: SUPABASE_PUBLISHABLE_KEY,
+      Authorization: `Bearer ${SUPABASE_PUBLISHABLE_KEY}`,
+      ...(options.headers || {})
+    };
+    if (options.body && !headers["Content-Type"]) headers["Content-Type"] = "application/json";
+    const response = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
+      ...options,
+      headers
+    });
+    if (!response.ok) throw new Error(await response.text());
+    if (response.status === 204) return null;
+    const text = await response.text();
+    return text ? JSON.parse(text) : null;
+  }
+
+  function rowToCharacter(row) {
+    return {
+      id: row.id,
+      name: row.name || "",
+      avatarData: "",
+      avatarPath: row.avatar_path || "",
+      avatarUrl: row.avatar_url || "",
+      country: row.country || "",
+      gender: row.gender || "",
+      sageStatus: normalizeSageStatus(row.sage_status),
+      age: row.age ?? "",
+      height: row.height ?? "",
+      birthday: row.birthday || "",
+      magicTool: row.magic_tool || "",
+      crestPosition: row.crest_position || "",
+      wounds: row.wounds || "",
+      manaDomain: row.mana_domain || "",
+      magicSpecialty: row.magic_specialty || "",
+      likes: row.likes || "",
+      dislikes: row.dislikes || "",
+      strengths: row.strengths || "",
+      weaknesses: row.weaknesses || "",
+      profile: row.profile || "",
+      createdAt: row.created_at || "",
+      updatedAt: row.updated_at || ""
+    };
+  }
+
+  function characterToRow(character) {
+    return {
+      id: character.id,
+      name: character.name,
+      avatar_path: character.avatarPath || null,
+      avatar_url: character.avatarUrl || null,
+      country: character.country,
+      gender: character.gender,
+      sage_status: normalizeSageStatus(character.sageStatus),
+      age: Number(character.age),
+      height: character.height === "" || character.height === undefined ? null : Number(character.height),
+      birthday: emptyToNull(character.birthday),
+      magic_tool: emptyToNull(character.magicTool),
+      crest_position: emptyToNull(character.crestPosition),
+      wounds: emptyToNull(character.wounds),
+      mana_domain: emptyToNull(character.manaDomain),
+      magic_specialty: emptyToNull(character.magicSpecialty),
+      likes: emptyToNull(character.likes),
+      dislikes: emptyToNull(character.dislikes),
+      strengths: emptyToNull(character.strengths),
+      weaknesses: emptyToNull(character.weaknesses),
+      profile: emptyToNull(character.profile),
+      created_at: character.createdAt || new Date().toISOString(),
+      updated_at: character.updatedAt || new Date().toISOString()
+    };
+  }
+
+  function rowToRelation(row) {
+    return {
+      id: row.id,
+      personAId: row.person_a_id,
+      personBId: row.person_b_id,
+      definition: row.definition || "",
+      description: row.description || "",
+      viewA: row.view_a || "",
+      viewB: row.view_b || "",
+      createdAt: row.created_at || "",
+      updatedAt: row.updated_at || ""
+    };
+  }
+
+  function relationToRow(relation) {
+    return {
+      id: relation.id,
+      person_a_id: relation.personAId,
+      person_b_id: relation.personBId,
+      definition: relation.definition,
+      description: emptyToNull(relation.description),
+      view_a: emptyToNull(relation.viewA),
+      view_b: emptyToNull(relation.viewB),
+      created_at: relation.createdAt || new Date().toISOString(),
+      updated_at: relation.updatedAt || new Date().toISOString()
+    };
+  }
+
+  function layoutsToCloudRows() {
+    const rows = [];
+    for (const [centerId, layout] of Object.entries(state.layouts)) {
+      for (const [personId, position] of Object.entries(layout.positions || {})) {
+        if (!findPerson(centerId) || !findPerson(personId)) continue;
+        rows.push({
+          center_id: centerId,
+          person_id: personId,
+          x: round2(Number(position.x)),
+          y: round2(Number(position.y)),
+          updated_at: layout.updatedAt || new Date().toISOString()
+        });
+      }
+    }
+    return rows;
+  }
+
+  function emptyToNull(value) {
+    const text = String(value ?? "").trim();
+    return text ? text : null;
+  }
+
+  async function uploadPendingAvatars() {
+    for (const character of state.characters) {
+      if (!isDataImage(character.avatarData)) continue;
+      const { blob, extension } = dataUrlToBlob(character.avatarData);
+      const path = `${character.id}.${extension}`;
+      const response = await fetch(
+        `${SUPABASE_URL}/storage/v1/object/${SUPABASE_AVATAR_BUCKET}/${encodeURIComponent(path)}`,
+        {
+          method: "POST",
+          headers: {
+            apikey: SUPABASE_PUBLISHABLE_KEY,
+            Authorization: `Bearer ${SUPABASE_PUBLISHABLE_KEY}`,
+            "Content-Type": blob.type || "application/octet-stream",
+            "x-upsert": "true"
+          },
+          body: blob
+        }
+      );
+      if (!response.ok) throw new Error(await response.text());
+      character.avatarPath = path;
+      character.avatarUrl = `${SUPABASE_URL}/storage/v1/object/public/${SUPABASE_AVATAR_BUCKET}/${encodeURIComponent(path)}?v=${Date.now()}`;
+      character.avatarData = "";
+      character.updatedAt = new Date().toISOString();
+    }
+  }
+
+  function dataUrlToBlob(dataUrl) {
+    const match = String(dataUrl || "").match(/^data:([^;,]+)(;base64)?,(.*)$/);
+    if (!match) throw new Error("头像数据格式不正确");
+    const mimeType = match[1] || "application/octet-stream";
+    const content = match[3] || "";
+    const binary = match[2] ? atob(content) : decodeURIComponent(content);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) {
+      bytes[index] = binary.charCodeAt(index);
+    }
+    return {
+      blob: new Blob([bytes], { type: mimeType }),
+      extension: imageExtension(mimeType)
+    };
+  }
+
+  function imageExtension(mimeType) {
+    if (mimeType === "image/png") return "png";
+    if (mimeType === "image/webp") return "webp";
+    if (mimeType === "image/gif") return "gif";
+    return "jpg";
+  }
+
+  function shortError(error) {
+    return String(error?.message || error || "未知错误").slice(0, 180);
+  }
+
   function resetPersonForm() {
     editingPersonId = null;
     tempAvatarData = "";
+    avatarCleared = false;
     dom.personForm.reset();
     dom.sageStatus.value = "非贤魔";
     dom.personFormTitle.textContent = "新建人物";
@@ -243,7 +549,9 @@
   }
 
   function updateAvatarPreview() {
-    dom.avatarPreview.src = tempAvatarData || defaultAvatar(dom.personName.value.trim());
+    const existing = editingPersonId ? findPerson(editingPersonId) : null;
+    dom.avatarPreview.src =
+      tempAvatarData || (!avatarCleared && existing?.avatarUrl) || defaultAvatar(dom.personName.value.trim());
   }
 
   function savePersonFromForm() {
@@ -297,11 +605,12 @@
     if (!COUNTRIES.includes(country)) throw new Error("请选择国家");
     if (!GENDERS.includes(gender)) throw new Error("请选择性别");
     if (manaDomain.length > 10) throw new Error("mana 域不能超过 10 字");
+    const avatarFields = collectAvatarFields(previous);
 
     return {
       id: previous ? previous.id : createId("char"),
       name,
-      avatarData: tempAvatarData || "",
+      ...avatarFields,
       country,
       gender,
       sageStatus,
@@ -318,6 +627,28 @@
       strengths: dom.strengths.value.trim(),
       weaknesses: dom.weaknesses.value.trim(),
       profile: dom.profile.value.trim()
+    };
+  }
+
+  function collectAvatarFields(previous) {
+    if (avatarCleared) {
+      return {
+        avatarData: "",
+        avatarPath: "",
+        avatarUrl: ""
+      };
+    }
+    if (isDataImage(tempAvatarData)) {
+      return {
+        avatarData: tempAvatarData,
+        avatarPath: "",
+        avatarUrl: ""
+      };
+    }
+    return {
+      avatarData: previous?.avatarData || "",
+      avatarPath: previous?.avatarPath || "",
+      avatarUrl: previous?.avatarUrl || ""
     };
   }
 
@@ -463,6 +794,7 @@
     if (!person) return;
     editingPersonId = person.id;
     tempAvatarData = person.avatarData || "";
+    avatarCleared = false;
     dom.personFormTitle.textContent = `编辑人物：${person.name}`;
     dom.personName.value = person.name || "";
     dom.country.value = person.country || "";
@@ -516,6 +848,7 @@
       renderEmptyGraph("请选择中心人物生成关系图");
     }
     saveState();
+    deleteCloudRows("characters", `id=eq.${encodeURIComponent(id)}`);
     renderAll();
     showToast("人物及相关关系已删除");
   }
@@ -746,6 +1079,7 @@
     state.relationships = state.relationships.filter((item) => item.id !== id);
     if (editingRelationId === id) resetRelationForm();
     saveState();
+    deleteCloudRows("relationships", `id=eq.${encodeURIComponent(id)}`);
     renderAll();
     showToast("关系已删除");
   }
@@ -1292,6 +1626,7 @@
     }
     delete state.layouts[currentCenterId];
     saveState();
+    deleteCloudRows("graph_layouts", `center_id=eq.${encodeURIComponent(currentCenterId)}`);
     renderGraph();
     showToast("当前中心人物的图谱布局已重置");
   }
@@ -1529,6 +1864,8 @@
             ...character,
             id: existing.id,
             avatarData: character.avatarData || existing.avatarData || "",
+            avatarPath: character.avatarPath || existing.avatarPath || "",
+            avatarUrl: character.avatarUrl || existing.avatarUrl || "",
             updatedAt: new Date().toISOString()
           });
           summary.peopleUpdated += 1;
@@ -1569,6 +1906,8 @@
       id: String(raw.id || "").trim(),
       name,
       avatarData: isDataImage(raw.avatarData) ? raw.avatarData : "",
+      avatarPath: String(raw.avatarPath || raw.avatar_path || "").trim(),
+      avatarUrl: String(raw.avatarUrl || raw.avatar_url || "").trim(),
       country,
       gender,
       sageStatus,
@@ -2310,7 +2649,7 @@ ${workbookRels}
   }
 
   function avatarFor(person) {
-    return person?.avatarData || defaultAvatar(person?.name || "");
+    return person?.avatarData || person?.avatarUrl || defaultAvatar(person?.name || "");
   }
 
   function findPerson(id) {
