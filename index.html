@@ -1,0 +1,321 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>人物关系图</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="app-header">
+      <div>
+        <h1>人物关系图</h1>
+        <p>本地人物设定、关系链接与可拖动关系图</p>
+      </div>
+      <div class="header-actions">
+        <button class="ghost-button" id="exportAllJson" type="button">导出全库 JSON</button>
+        <button class="ghost-button" id="exportAllExcel" type="button">导出全库 Excel</button>
+        <label class="file-button">
+          导入全库
+          <input id="importAllFile" type="file" accept=".json,.xlsx,.xls,.csv" />
+        </label>
+      </div>
+    </header>
+
+    <nav class="tabs" aria-label="主功能">
+      <button class="tab-button active" data-tab="people" type="button">人物设定</button>
+      <button class="tab-button" data-tab="relations" type="button">关系链接</button>
+      <button class="tab-button" data-tab="graph" type="button">关系总结</button>
+    </nav>
+
+    <main>
+      <section class="tab-panel active" id="peoplePanel">
+        <div class="split-layout">
+          <form class="panel form-panel" id="personForm">
+            <div class="section-title">
+              <h2 id="personFormTitle">新建人物</h2>
+              <span>姓名、国家、性别、是否贤魔、年龄必填</span>
+            </div>
+
+            <div class="avatar-editor">
+              <img alt="人物头像预览" id="avatarPreview" />
+              <div>
+                <label class="file-button compact">
+                  上传头像
+                  <input id="avatarInput" type="file" accept="image/*" />
+                </label>
+                <button class="icon-button" id="clearAvatar" type="button" title="恢复默认头像">↺</button>
+                <p>头像会压缩后保存在本机浏览器中。</p>
+              </div>
+            </div>
+
+            <div class="form-grid">
+              <label>
+                姓名 *
+                <input id="personName" maxlength="40" required />
+              </label>
+              <label>
+                国家 *
+                <select id="country" required>
+                  <option value="">请选择</option>
+                  <option value="央">央</option>
+                  <option value="北">北</option>
+                  <option value="东">东</option>
+                  <option value="西">西</option>
+                  <option value="南">南</option>
+                </select>
+              </label>
+              <label>
+                性别 *
+                <select id="gender" required>
+                  <option value="">请选择</option>
+                  <option value="男">男</option>
+                  <option value="女">女</option>
+                </select>
+              </label>
+              <label>
+                是否贤魔 *
+                <select id="sageStatus" required>
+                  <option value="">请选择</option>
+                  <option value="贤魔">贤魔</option>
+                  <option value="前贤魔">前贤魔</option>
+                  <option value="非贤魔">非贤魔</option>
+                </select>
+              </label>
+              <label>
+                年龄 *
+                <input id="age" type="number" min="0" max="9999" required />
+              </label>
+              <label>
+                身高 cm
+                <input id="height" type="number" min="1" max="999" />
+              </label>
+              <label>
+                生日月份
+                <input id="birthdayMonth" type="number" min="1" max="12" placeholder="1-12" />
+              </label>
+              <label>
+                生日日期
+                <input id="birthdayDay" type="number" min="1" max="31" placeholder="1-31" />
+              </label>
+              <label>
+                魔道具
+                <input id="magicTool" maxlength="80" />
+              </label>
+              <label>
+                纹章位置
+                <input id="crestPosition" maxlength="80" />
+              </label>
+              <label>
+                伤
+                <input id="wounds" maxlength="120" />
+              </label>
+              <label>
+                mana 域
+                <input id="manaDomain" maxlength="10" />
+              </label>
+              <label>
+                擅长的魔法
+                <input id="magicSpecialty" maxlength="120" />
+              </label>
+              <label>
+                喜欢的事/物
+                <input id="likes" maxlength="160" />
+              </label>
+              <label>
+                讨厌的事/物
+                <input id="dislikes" maxlength="160" />
+              </label>
+              <label>
+                擅长的事/物
+                <input id="strengths" maxlength="160" />
+              </label>
+              <label>
+                不擅长的事/物
+                <input id="weaknesses" maxlength="160" />
+              </label>
+              <label class="wide-field">
+                个人简介
+                <textarea id="profile" rows="4" maxlength="1200"></textarea>
+              </label>
+            </div>
+
+            <div class="form-actions">
+              <button class="primary-button" type="submit">保存人物</button>
+              <button class="ghost-button" id="resetPersonForm" type="button">清空</button>
+            </div>
+          </form>
+
+          <section class="panel library-panel">
+            <div class="section-title">
+              <h2>人物信息库</h2>
+              <span id="peopleCount">0 人</span>
+            </div>
+            <div class="toolbar">
+              <input id="peopleSearch" placeholder="搜索姓名、魔道具、贤魔、简介" />
+              <select id="peopleCountryFilter">
+                <option value="">全部国家</option>
+                <option value="央">央</option>
+                <option value="北">北</option>
+                <option value="东">东</option>
+                <option value="西">西</option>
+                <option value="南">南</option>
+              </select>
+              <select id="peopleGenderFilter">
+                <option value="">全部性别</option>
+                <option value="男">男</option>
+                <option value="女">女</option>
+              </select>
+              <select id="peopleSageFilter">
+                <option value="">全部贤魔状态</option>
+                <option value="贤魔">贤魔</option>
+                <option value="前贤魔">前贤魔</option>
+                <option value="非贤魔">非贤魔</option>
+              </select>
+            </div>
+            <div class="toolbar secondary-toolbar">
+              <button class="ghost-button" id="exportPeopleJson" type="button">导出 JSON</button>
+              <button class="ghost-button" id="exportPeopleExcel" type="button">导出 Excel</button>
+              <label class="file-button">
+                导入人物
+                <input id="importPeopleFile" type="file" accept=".json,.xlsx,.xls,.csv" />
+              </label>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>外貌</th>
+                    <th>姓名</th>
+                    <th>国家</th>
+                    <th>性别</th>
+                    <th>是否贤魔</th>
+                    <th>年龄</th>
+                    <th>身高</th>
+                    <th>生日</th>
+                    <th>魔道具</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="peopleTableBody"></tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <section class="tab-panel" id="relationsPanel">
+        <div class="split-layout">
+          <form class="panel form-panel" id="relationForm">
+            <div class="section-title">
+              <h2 id="relationFormTitle">新建关系</h2>
+              <span>前三项必填</span>
+            </div>
+            <div class="form-grid">
+              <label>
+                人物 A *
+                <select id="personA" required></select>
+              </label>
+              <label>
+                人物 B *
+                <select id="personB" required></select>
+              </label>
+              <label class="wide-field">
+                人物关系定义 *
+                <input id="relationDefinition" placeholder="如：师徒、敌对、亲友" required />
+              </label>
+              <label class="wide-field">
+                人物关系描述
+                <textarea id="relationDescription" rows="4" maxlength="1200"></textarea>
+              </label>
+              <label class="wide-field">
+                人物 A 对人物 B 看法
+                <textarea id="viewA" rows="3" maxlength="800"></textarea>
+              </label>
+              <label class="wide-field">
+                人物 B 对人物 A 看法
+                <textarea id="viewB" rows="3" maxlength="800"></textarea>
+              </label>
+            </div>
+            <div class="hint-line">同一对人物只保存一行关系；多个定义请用顿号、逗号或斜杠分隔，每个定义不超过 10 字。</div>
+            <div class="form-actions">
+              <button class="primary-button" type="submit">保存关系</button>
+              <button class="ghost-button" id="resetRelationForm" type="button">清空</button>
+            </div>
+          </form>
+
+          <section class="panel library-panel">
+            <div class="section-title">
+              <h2>人物关系库</h2>
+              <span id="relationsCount">0 条</span>
+            </div>
+            <div class="toolbar">
+              <input id="relationSearch" placeholder="搜索人物、关系、描述" />
+              <select id="relationPersonFilter"></select>
+              <div class="status-filter" id="relationSageFilter" aria-label="贤魔状态筛选">
+                <label><input type="checkbox" value="贤魔" checked />贤魔</label>
+                <label><input type="checkbox" value="前贤魔" checked />前贤魔</label>
+                <label><input type="checkbox" value="非贤魔" checked />非贤魔</label>
+              </div>
+            </div>
+            <div class="toolbar secondary-toolbar">
+              <button class="ghost-button" id="exportRelationsJson" type="button">导出 JSON</button>
+              <button class="ghost-button" id="exportRelationsExcel" type="button">导出 Excel</button>
+              <label class="file-button">
+                导入关系 Excel
+                <input id="importRelationsFile" type="file" accept=".json,.xlsx,.xls,.csv" />
+              </label>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>人物 A</th>
+                    <th>人物 B</th>
+                    <th>关系定义</th>
+                    <th>描述</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="relationsTableBody"></tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <section class="tab-panel" id="graphPanel">
+        <section class="panel graph-panel">
+          <div class="section-title">
+            <h2>关系总结</h2>
+            <span id="graphStatus">请选择中心人物</span>
+          </div>
+          <div class="toolbar graph-toolbar">
+            <select id="centerPerson"></select>
+            <div class="status-filter" id="graphSageFilter" aria-label="图谱贤魔状态筛选">
+              <label><input type="checkbox" value="贤魔" checked />贤魔</label>
+              <label><input type="checkbox" value="前贤魔" checked />前贤魔</label>
+              <label><input type="checkbox" value="非贤魔" checked />非贤魔</label>
+            </div>
+            <button class="primary-button" id="renderGraph" type="button">生成图谱</button>
+            <button class="ghost-button" id="saveGraphLayout" type="button">保存布局</button>
+            <button class="ghost-button" id="resetGraphLayout" type="button">重置布局</button>
+            <button class="ghost-button" id="exportGraphPng" type="button">导出 PNG</button>
+            <label class="file-button">
+              导入全库 Excel
+              <input id="importGraphFile" type="file" accept=".json,.xlsx,.xls,.csv" />
+            </label>
+          </div>
+          <div class="graph-canvas-wrap">
+            <svg id="relationGraph" viewBox="0 0 1000 620" role="img" aria-label="人物关系图"></svg>
+          </div>
+          <div class="hint-line">生成后可拖动周围人物节点，点击“保存布局”后仅保存当前中心人物的图谱位置。</div>
+        </section>
+      </section>
+    </main>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+    <script src="app.js"></script>
+  </body>
+</html>
