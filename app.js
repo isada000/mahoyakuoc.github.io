@@ -2,6 +2,7 @@
   "use strict";
 
   const STORE_KEY = "relationship.graph.builder.v1";
+  const AUTH_STORE_KEY = "relationship.supabase.session.v1";
   const SVG_NS = "http://www.w3.org/2000/svg";
   const SVG_W = 1000;
   const SVG_H = 620;
@@ -77,12 +78,15 @@
   let cloudSyncInFlight = false;
   let cloudSyncAgain = false;
   let cloudReady = false;
+  let authSession = loadAuthSession();
+  let currentUser = authSession?.user || null;
 
   document.addEventListener("DOMContentLoaded", init);
 
   async function init() {
     cacheDom();
     bindEvents();
+    await restoreAuthSession();
     resetPersonForm();
     resetRelationForm();
     renderAll();
@@ -103,6 +107,12 @@
       button.addEventListener("click", () => switchTab(button.dataset.tab));
     });
 
+    dom.authForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      loginWithPassword();
+    });
+    dom.authLogout.addEventListener("click", logoutAuth);
+
     dom.personForm.addEventListener("submit", (event) => {
       event.preventDefault();
       savePersonFromForm();
@@ -112,6 +122,10 @@
       if (!tempAvatarData) updateAvatarPreview();
     });
     dom.avatarInput.addEventListener("change", async () => {
+      if (!requireWriteAccess()) {
+        dom.avatarInput.value = "";
+        return;
+      }
       const file = dom.avatarInput.files[0];
       if (!file) return;
       try {
@@ -125,6 +139,7 @@
       }
     });
     dom.clearAvatar.addEventListener("click", () => {
+      if (!requireWriteAccess()) return;
       tempAvatarData = "";
       avatarCleared = true;
       updateAvatarPreview();
@@ -174,6 +189,10 @@
 
   function bindFileImport(input, scope) {
     input.addEventListener("change", async () => {
+      if (!requireWriteAccess()) {
+        input.value = "";
+        return;
+      }
       const file = input.files[0];
       if (!file) return;
       try {
@@ -245,6 +264,196 @@
     renderRelationsTable();
     renderGraphSelect();
     if (currentCenterId) renderGraph();
+    updateAuthUi();
+  }
+
+  function loadAuthSession() {
+    try {
+      const raw = localStorage.getItem(AUTH_STORE_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function saveAuthSession(session) {
+    authSession = session;
+    currentUser = session?.user || null;
+    try {
+      if (session) {
+        localStorage.setItem(AUTH_STORE_KEY, JSON.stringify(session));
+      } else {
+        localStorage.removeItem(AUTH_STORE_KEY);
+      }
+    } catch {
+      // Auth still works for the current tab even if localStorage is unavailable.
+    }
+  }
+
+  function normalizeAuthSession(payload) {
+    if (!payload?.access_token) return null;
+    const now = Math.floor(Date.now() / 1000);
+    return {
+      access_token: payload.access_token,
+      refresh_token: payload.refresh_token || authSession?.refresh_token || "",
+      token_type: payload.token_type || "bearer",
+      expires_at: payload.expires_at || now + Number(payload.expires_in || 3600),
+      user: payload.user || authSession?.user || null
+    };
+  }
+
+  function authToken() {
+    return authSession?.access_token || SUPABASE_PUBLISHABLE_KEY;
+  }
+
+  function canWriteCloud() {
+    return CLOUD_ENABLED && Boolean(authSession?.access_token && currentUser?.id);
+  }
+
+  function requireWriteAccess() {
+    if (canWriteCloud()) return true;
+    showToast("请先登录后再修改云端数据。");
+    return false;
+  }
+
+  function isAuthExpiringSoon(session) {
+    return !session?.access_token || Number(session.expires_at || 0) * 1000 < Date.now() + 60000;
+  }
+
+  async function restoreAuthSession() {
+    if (!authSession) {
+      updateAuthUi();
+      return;
+    }
+    currentUser = authSession.user || null;
+    updateAuthUi();
+    if (!isAuthExpiringSoon(authSession)) return;
+    try {
+      await refreshAuthSession();
+    } catch {
+      saveAuthSession(null);
+      updateAuthUi();
+      showToast("登录已过期，请重新登录。");
+    }
+  }
+
+  async function refreshAuthSession() {
+    if (!authSession?.refresh_token) throw new Error("Missing refresh token");
+    const payload = await authRequest("token?grant_type=refresh_token", {
+      method: "POST",
+      body: JSON.stringify({ refresh_token: authSession.refresh_token })
+    });
+    const session = normalizeAuthSession(payload);
+    if (!session) throw new Error("Invalid auth session");
+    saveAuthSession(session);
+    updateAuthUi();
+  }
+
+  async function loginWithPassword() {
+    if (!CLOUD_ENABLED) {
+      showToast("尚未配置 Supabase，无法登录。");
+      return;
+    }
+    const email = dom.authEmail.value.trim();
+    const password = dom.authPassword.value;
+    if (!email || !password) {
+      showToast("请填写邮箱和密码。");
+      return;
+    }
+    dom.authLogin.disabled = true;
+    try {
+      const payload = await authRequest("token?grant_type=password", {
+        method: "POST",
+        body: JSON.stringify({ email, password })
+      });
+      const session = normalizeAuthSession(payload);
+      if (!session) throw new Error("Invalid auth session");
+      saveAuthSession(session);
+      dom.authPassword.value = "";
+      renderAll();
+      scheduleCloudSync();
+      showToast("已登录，可以编辑云端数据。");
+    } catch (error) {
+      showToast(`登录失败：${shortError(error)}`);
+    } finally {
+      dom.authLogin.disabled = false;
+      updateAuthUi();
+    }
+  }
+
+  async function logoutAuth() {
+    const token = authSession?.access_token;
+    saveAuthSession(null);
+    renderAll();
+    showToast("已退出登录，当前为只读模式。");
+    if (!token) return;
+    try {
+      await authRequest("logout", {
+        method: "POST",
+        accessToken: token
+      });
+    } catch {
+      // Local logout is enough for this static app.
+    }
+  }
+
+  async function authRequest(path, options = {}) {
+    const { accessToken, headers: optionHeaders, ...fetchOptions } = options;
+    const headers = {
+      apikey: SUPABASE_PUBLISHABLE_KEY,
+      "Content-Type": "application/json",
+      ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+      ...(optionHeaders || {})
+    };
+    const response = await fetch(`${SUPABASE_URL}/auth/v1/${path}`, {
+      ...fetchOptions,
+      headers
+    });
+    if (!response.ok) throw new Error(await response.text());
+    if (response.status === 204) return null;
+    const text = await response.text();
+    return text ? JSON.parse(text) : null;
+  }
+
+  function updateAuthUi() {
+    if (!dom.authStatus) return;
+    const signedIn = canWriteCloud();
+    dom.authStatus.textContent = signedIn
+      ? `已登录：${currentUser.email || currentUser.id}`
+      : "未登录：只读模式";
+    dom.authEmail.hidden = signedIn;
+    dom.authPassword.hidden = signedIn;
+    dom.authLogin.hidden = signedIn;
+    dom.authLogout.hidden = !signedIn;
+    setWriteControlsDisabled(!signedIn);
+  }
+
+  function setWriteControlsDisabled(disabled) {
+    const selectors = [
+      "#personForm input",
+      "#personForm select",
+      "#personForm textarea",
+      "#personForm button",
+      "#relationForm input",
+      "#relationForm select",
+      "#relationForm textarea",
+      "#relationForm button",
+      "#importAllFile",
+      "#importPeopleFile",
+      "#importRelationsFile",
+      "#importGraphFile",
+      "#saveGraphLayout",
+      "#resetGraphLayout",
+      ".row-actions button"
+    ];
+    document.querySelectorAll(selectors.join(",")).forEach((element) => {
+      element.disabled = disabled;
+    });
+    [dom.avatarInput, dom.importAllFile, dom.importPeopleFile, dom.importRelationsFile, dom.importGraphFile]
+      .filter(Boolean)
+      .forEach((input) => {
+        input.closest(".file-button")?.classList.toggle("disabled", disabled);
+      });
   }
 
   async function hydrateFromCloud() {
@@ -265,9 +474,11 @@
         return;
       }
       cloudReady = true;
-      if (state.characters.length || state.relationships.length || Object.keys(state.layouts).length) {
+      if (canWriteCloud() && (state.characters.length || state.relationships.length || Object.keys(state.layouts).length)) {
         scheduleCloudSync();
         showToast("云端库为空，正在上传本地数据");
+      } else if (state.characters.length || state.relationships.length || Object.keys(state.layouts).length) {
+        showToast("云端库为空。本地数据需登录后才能上传。");
       } else {
         showToast("已连接 Supabase 云端库");
       }
@@ -306,7 +517,7 @@
   }
 
   function scheduleCloudSync() {
-    if (!CLOUD_ENABLED) return;
+    if (!CLOUD_ENABLED || !canWriteCloud()) return;
     clearTimeout(cloudSyncTimer);
     cloudSyncTimer = setTimeout(() => {
       syncStateToCloud().catch((error) => {
@@ -316,7 +527,7 @@
   }
 
   async function syncStateToCloud() {
-    if (!CLOUD_ENABLED) return;
+    if (!CLOUD_ENABLED || !canWriteCloud()) return;
     if (cloudSyncInFlight) {
       cloudSyncAgain = true;
       return;
@@ -350,7 +561,7 @@
   }
 
   async function deleteCloudRows(table, filter) {
-    if (!CLOUD_ENABLED) return;
+    if (!CLOUD_ENABLED || !canWriteCloud()) return;
     try {
       await cloudRequest(`${table}?${filter}`, {
         method: "DELETE",
@@ -366,7 +577,7 @@
   async function cloudRequest(path, options = {}) {
     const headers = {
       apikey: SUPABASE_PUBLISHABLE_KEY,
-      Authorization: `Bearer ${SUPABASE_PUBLISHABLE_KEY}`,
+      Authorization: `Bearer ${authToken()}`,
       ...(options.headers || {})
     };
     if (options.body && !headers["Content-Type"]) headers["Content-Type"] = "application/json";
@@ -486,6 +697,7 @@
   }
 
   async function uploadPendingAvatars() {
+    if (!canWriteCloud()) return;
     for (const character of state.characters) {
       if (!isDataImage(character.avatarData)) continue;
       const { blob, extension } = dataUrlToBlob(character.avatarData);
@@ -496,7 +708,7 @@
           method: "POST",
           headers: {
             apikey: SUPABASE_PUBLISHABLE_KEY,
-            Authorization: `Bearer ${SUPABASE_PUBLISHABLE_KEY}`,
+            Authorization: `Bearer ${authToken()}`,
             "Content-Type": blob.type || "application/octet-stream",
             "x-upsert": "true"
           },
@@ -555,6 +767,7 @@
   }
 
   function savePersonFromForm() {
+    if (!requireWriteAccess()) return;
     try {
       const person = collectPersonForm();
       const duplicate = state.characters.find(
@@ -725,6 +938,7 @@
     const country = dom.peopleCountryFilter.value;
     const gender = dom.peopleGenderFilter.value;
     const sageStatus = dom.peopleSageFilter.value;
+    const writeDisabled = canWriteCloud() ? "" : " disabled";
     const filtered = state.characters.filter((person) => {
       if (country && person.country !== country) return false;
       if (gender && person.gender !== gender) return false;
@@ -750,8 +964,8 @@
               <td class="muted-cell" title="${escapeAttr(person.magicTool)}">${escapeHtml(person.magicTool)}</td>
               <td>
                 <div class="row-actions">
-                  <button class="small-button" data-action="edit" data-id="${escapeAttr(person.id)}" type="button">编辑</button>
-                  <button class="small-button danger-button" data-action="delete" data-id="${escapeAttr(person.id)}" type="button">删除</button>
+                  <button class="small-button" data-action="edit" data-id="${escapeAttr(person.id)}" type="button"${writeDisabled}>编辑</button>
+                  <button class="small-button danger-button" data-action="delete" data-id="${escapeAttr(person.id)}" type="button"${writeDisabled}>删除</button>
                 </div>
               </td>
             </tr>`
@@ -784,6 +998,7 @@
   function onPeopleTableClick(event) {
     const button = event.target.closest("button[data-action]");
     if (!button) return;
+    if (!requireWriteAccess()) return;
     const id = button.dataset.id;
     if (button.dataset.action === "edit") loadPersonIntoForm(id);
     if (button.dataset.action === "delete") deletePerson(id);
@@ -820,6 +1035,7 @@
   }
 
   function deletePerson(id) {
+    if (!requireWriteAccess()) return;
     const person = findPerson(id);
     if (!person) return;
     const related = state.relationships.filter((relation) => relation.personAId === id || relation.personBId === id);
@@ -883,6 +1099,7 @@
   }
 
   function saveRelationFromForm() {
+    if (!requireWriteAccess()) return;
     try {
       const relation = collectRelationForm();
       const existing = state.relationships.find(
@@ -963,6 +1180,7 @@
     const search = dom.relationSearch.value.trim().toLowerCase();
     const personFilter = dom.relationPersonFilter.value;
     const sageFilter = selectedSageStatusSet(dom.relationSageFilter);
+    const writeDisabled = canWriteCloud() ? "" : " disabled";
     const filtered = state.relationships.filter((relation) => {
       if (
         personFilter &&
@@ -993,8 +1211,8 @@
                 <td class="muted-cell" title="${escapeAttr(relation.description || "")}">${escapeHtml(relation.description || "未填写")}</td>
                 <td>
                   <div class="row-actions">
-                    <button class="small-button" data-action="edit" data-id="${escapeAttr(relation.id)}" type="button">编辑</button>
-                    <button class="small-button danger-button" data-action="delete" data-id="${escapeAttr(relation.id)}" type="button">删除</button>
+                    <button class="small-button" data-action="edit" data-id="${escapeAttr(relation.id)}" type="button"${writeDisabled}>编辑</button>
+                    <button class="small-button danger-button" data-action="delete" data-id="${escapeAttr(relation.id)}" type="button"${writeDisabled}>删除</button>
                   </div>
                 </td>
               </tr>`;
@@ -1050,6 +1268,7 @@
   function onRelationsTableClick(event) {
     const button = event.target.closest("button[data-action]");
     if (!button) return;
+    if (!requireWriteAccess()) return;
     const id = button.dataset.id;
     if (button.dataset.action === "edit") loadRelationIntoForm(id);
     if (button.dataset.action === "delete") deleteRelation(id);
@@ -1071,6 +1290,7 @@
   }
 
   function deleteRelation(id) {
+    if (!requireWriteAccess()) return;
     const relation = state.relationships.find((item) => item.id === id);
     if (!relation) return;
     const personA = findPerson(relation.personAId)?.name || "人物 A";
@@ -1502,6 +1722,7 @@
   }
 
   function onNodePointerDown(event) {
+    if (!canWriteCloud()) return;
     const node = event.currentTarget;
     const id = node.dataset.id;
     if (!id || !currentCenterId) return;
@@ -1588,6 +1809,7 @@
   }
 
   function saveCurrentGraphLayout() {
+    if (!requireWriteAccess()) return;
     if (!currentCenterId) {
       showToast("请先选择中心人物");
       return;
@@ -1620,6 +1842,7 @@
   }
 
   function resetCurrentGraphLayout() {
+    if (!requireWriteAccess()) return;
     if (!currentCenterId) {
       showToast("请先选择中心人物");
       return;
@@ -1779,6 +2002,7 @@
   }
 
   async function importFile(file, scope) {
+    if (!requireWriteAccess()) return;
     const imported = await readImportFile(file);
     const summary = {
       peopleAdded: 0,

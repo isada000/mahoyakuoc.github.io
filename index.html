@@ -12,13 +12,22 @@
         <h1>人物关系图</h1>
         <p>本地人物设定、关系链接与可拖动关系图</p>
       </div>
-      <div class="header-actions">
-        <button class="ghost-button" id="exportAllJson" type="button">导出全库 JSON</button>
-        <button class="ghost-button" id="exportAllExcel" type="button">导出全库 Excel</button>
-        <label class="file-button">
-          导入全库
-          <input id="importAllFile" type="file" accept=".json,.xlsx,.xls,.csv" />
-        </label>
+      <div class="header-side">
+        <form class="auth-panel" id="authForm">
+          <span class="auth-status" id="authStatus">未登录：只读模式</span>
+          <input id="authEmail" type="email" autocomplete="email" placeholder="邮箱" />
+          <input id="authPassword" type="password" autocomplete="current-password" placeholder="密码" />
+          <button class="primary-button" id="authLogin" type="submit">登录</button>
+          <button class="ghost-button" id="authLogout" type="button" hidden>退出</button>
+        </form>
+        <div class="header-actions">
+          <button class="ghost-button" id="exportAllJson" type="button">导出全库 JSON</button>
+          <button class="ghost-button" id="exportAllExcel" type="button">导出全库 Excel</button>
+          <label class="file-button">
+            导入全库
+            <input id="importAllFile" type="file" accept=".json,.xlsx,.xls,.csv" />
+          </label>
+        </div>
       </div>
     </header>
 
@@ -316,6 +325,6 @@
 
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
-    <script src="app.js"></script>
+    <script src="app.js?v=auth-20260707"></script>
   </body>
 </html>
