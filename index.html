@@ -35,6 +35,7 @@
       <button class="tab-button active" data-tab="people" type="button">人物设定</button>
       <button class="tab-button" data-tab="relations" type="button">关系链接</button>
       <button class="tab-button" data-tab="graph" type="button">关系总结</button>
+      <button class="tab-button" data-tab="sageNetwork" type="button">贤魔关系图</button>
     </nav>
 
     <main>
@@ -321,10 +322,26 @@
           <div class="hint-line">生成后可拖动周围人物节点，点击“保存布局”后仅保存当前中心人物的图谱位置。</div>
         </section>
       </section>
+
+      <section class="tab-panel" id="sageNetworkPanel">
+        <section class="panel graph-panel">
+          <div class="section-title">
+            <h2>贤魔关系图</h2>
+            <span id="sageNetworkStatus">等待载入贤魔关系</span>
+          </div>
+          <div class="toolbar graph-toolbar">
+            <button class="ghost-button" id="clearSageNetworkFocus" type="button">清除高亮</button>
+          </div>
+          <div class="graph-canvas-wrap sage-network-wrap">
+            <svg id="sageNetworkGraph" viewBox="0 0 1000 760" role="img" aria-label="所有贤魔关系连线"></svg>
+          </div>
+          <div class="hint-line">点击任一贤魔头像可高亮其相关贤魔与连线，并显示这些连线的关系文字。</div>
+        </section>
+      </section>
     </main>
 
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
-    <script src="app.js?v=auth-20260707"></script>
+    <script src="app.js?v=sage-network-straight-20260710"></script>
   </body>
 </html>

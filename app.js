@@ -6,6 +6,9 @@
   const SVG_NS = "http://www.w3.org/2000/svg";
   const SVG_W = 1000;
   const SVG_H = 620;
+  const SAGE_NETWORK_W = 1000;
+  const SAGE_NETWORK_H = 760;
+  const SAGE_NETWORK_NODE_R = 38;
   const SUPABASE_URL = "https://pzxlsaulqmagxbcthrcg.supabase.co";
   const SUPABASE_PUBLISHABLE_KEY = "sb_publishable_q6YhjTTRGkR8KKUFuMkWow_TexC5-h-";
   const SUPABASE_AVATAR_BUCKET = "avatars";
@@ -80,6 +83,7 @@
   let cloudReady = false;
   let authSession = loadAuthSession();
   let currentUser = authSession?.user || null;
+  let selectedSageNetworkId = "";
 
   document.addEventListener("DOMContentLoaded", init);
 
@@ -173,6 +177,8 @@
     dom.saveGraphLayout.addEventListener("click", saveCurrentGraphLayout);
     dom.resetGraphLayout.addEventListener("click", resetCurrentGraphLayout);
     dom.exportGraphPng.addEventListener("click", exportGraphPng);
+    dom.clearSageNetworkFocus.addEventListener("click", clearSageNetworkFocus);
+    dom.sageNetworkGraph.addEventListener("click", clearSageNetworkFocus);
 
     dom.exportAllJson.addEventListener("click", () => exportJson("all"));
     dom.exportPeopleJson.addEventListener("click", () => exportJson("people"));
@@ -264,6 +270,7 @@
     renderRelationsTable();
     renderGraphSelect();
     if (currentCenterId) renderGraph();
+    renderSageNetwork();
     updateAuthUi();
   }
 
@@ -1902,6 +1909,260 @@
     } catch (error) {
       showToast(error.message || "PNG 导出失败");
     }
+  }
+
+  function renderSageNetwork() {
+    if (!dom.sageNetworkGraph) return;
+    const sages = state.characters.filter((person) => normalizeSageStatus(person.sageStatus) === "贤魔");
+    const sageIds = new Set(sages.map((person) => person.id));
+    if (selectedSageNetworkId && !sageIds.has(selectedSageNetworkId)) {
+      selectedSageNetworkId = "";
+    }
+
+    const relations = state.relationships.filter(
+      (relation) => sageIds.has(relation.personAId) && sageIds.has(relation.personBId)
+    );
+    dom.sageNetworkGraph.innerHTML = "";
+    appendSageNetworkDecor(dom.sageNetworkGraph);
+
+    if (!sages.length) {
+      const text = svgElement("text", {
+        class: "graph-empty",
+        x: SAGE_NETWORK_W / 2,
+        y: SAGE_NETWORK_H / 2
+      });
+      text.textContent = "暂无贤魔人物";
+      dom.sageNetworkGraph.appendChild(text);
+      dom.sageNetworkStatus.textContent = "暂无贤魔人物";
+      return;
+    }
+
+    const positions = buildSageNetworkPositions(sages);
+    const selectedRelations = selectedSageNetworkId
+      ? relations.filter(
+          (relation) =>
+            relation.personAId === selectedSageNetworkId || relation.personBId === selectedSageNetworkId
+        )
+      : [];
+    const connectedIds = new Set();
+    selectedRelations.forEach((relation) => {
+      connectedIds.add(relation.personAId);
+      connectedIds.add(relation.personBId);
+    });
+
+    const linkLayer = svgElement("g", { class: "sage-network-links" });
+    const labelLayer = svgElement("g", { class: "sage-network-labels" });
+    const nodeLayer = svgElement("g", { class: "sage-network-nodes" });
+
+    relations.forEach((relation, index) => {
+      const from = positions[relation.personAId];
+      const to = positions[relation.personBId];
+      if (!from || !to) return;
+      const isFocused =
+        selectedSageNetworkId &&
+        (relation.personAId === selectedSageNetworkId || relation.personBId === selectedSageNetworkId);
+      const line = sageNetworkLine(from, to);
+      const link = svgElement("path", {
+        class: `sage-network-link${isFocused ? " highlight" : selectedSageNetworkId ? " dimmed" : ""}`,
+        d: line.path,
+        "data-index": index
+      });
+      linkLayer.appendChild(link);
+      if (isFocused) {
+        labelLayer.appendChild(createSageNetworkLabel(relation.definition, line.label));
+      }
+    });
+
+    sages.forEach((person) => {
+      const isActive = person.id === selectedSageNetworkId;
+      const isConnected = selectedSageNetworkId && connectedIds.has(person.id);
+      const isDimmed = selectedSageNetworkId && !isActive && !isConnected;
+      nodeLayer.appendChild(
+        createSageNetworkNode(person, positions[person.id], {
+          active: isActive,
+          connected: isConnected && !isActive,
+          dimmed: isDimmed
+        })
+      );
+    });
+
+    dom.sageNetworkGraph.append(linkLayer, labelLayer, nodeLayer);
+    if (selectedSageNetworkId) {
+      const selected = findPerson(selectedSageNetworkId);
+      dom.sageNetworkStatus.textContent = `${selected?.name || "当前贤魔"}：${
+        Math.max(connectedIds.size - 1, 0)
+      } 位相关贤魔，${selectedRelations.length} 条关系`;
+    } else {
+      dom.sageNetworkStatus.textContent = `${sages.length} 位贤魔，${relations.length} 条贤魔间关系`;
+    }
+  }
+
+  function clearSageNetworkFocus() {
+    if (!selectedSageNetworkId) return;
+    selectedSageNetworkId = "";
+    renderSageNetwork();
+  }
+
+  function buildSageNetworkPositions(sages) {
+    const positions = {};
+    const centerX = SAGE_NETWORK_W / 2;
+    const centerY = SAGE_NETWORK_H / 2;
+    const radius = 290;
+    const count = Math.max(sages.length, 1);
+    sages.forEach((person, index) => {
+      const angle = -Math.PI / 2 + (index / count) * Math.PI * 2;
+      positions[person.id] = {
+        x: centerX + Math.cos(angle) * radius,
+        y: centerY + Math.sin(angle) * radius
+      };
+    });
+    return positions;
+  }
+
+  function appendSageNetworkDecor(svg) {
+    const defs = svgElement("defs");
+    svg.appendChild(defs);
+    svg.appendChild(
+      svgElement("rect", {
+        x: 0,
+        y: 0,
+        width: SAGE_NETWORK_W,
+        height: SAGE_NETWORK_H,
+        fill: "#fffdf9"
+      })
+    );
+    svg.appendChild(
+      svgElement("circle", {
+        cx: SAGE_NETWORK_W / 2,
+        cy: SAGE_NETWORK_H / 2,
+        r: 290,
+        fill: "none",
+        stroke: "#d7c8a2",
+        "stroke-width": 1.2,
+        "stroke-dasharray": "3 9",
+        opacity: 0.8
+      })
+    );
+  }
+
+  function sageNetworkLine(from, to) {
+    const dx = to.x - from.x;
+    const dy = to.y - from.y;
+    const distance = Math.hypot(dx, dy) || 1;
+    const ux = dx / distance;
+    const uy = dy / distance;
+    const start = {
+      x: from.x + ux * (SAGE_NETWORK_NODE_R + 8),
+      y: from.y + uy * (SAGE_NETWORK_NODE_R + 8)
+    };
+    const end = {
+      x: to.x - ux * (SAGE_NETWORK_NODE_R + 8),
+      y: to.y - uy * (SAGE_NETWORK_NODE_R + 8)
+    };
+    const label = {
+      x: (start.x + end.x) / 2,
+      y: (start.y + end.y) / 2
+    };
+    return {
+      path: `M ${round2(start.x)} ${round2(start.y)} L ${round2(end.x)} ${round2(end.y)}`,
+      label
+    };
+  }
+
+  function createSageNetworkNode(person, position, stateClass) {
+    const classes = ["sage-network-node"];
+    if (stateClass.active) classes.push("active");
+    if (stateClass.connected) classes.push("connected");
+    if (stateClass.dimmed) classes.push("dimmed");
+    const group = svgElement("g", {
+      class: classes.join(" "),
+      "data-id": person.id,
+      style: `--node-ring-color: ${countryColor(person.country)}`,
+      transform: `translate(${round2(position.x)} ${round2(position.y)})`
+    });
+    group.addEventListener("click", (event) => {
+      event.stopPropagation();
+      selectedSageNetworkId = selectedSageNetworkId === person.id ? "" : person.id;
+      renderSageNetwork();
+    });
+
+    const clipId = `sage-clip-${safeSvgId(person.id)}`;
+    const defs = dom.sageNetworkGraph.querySelector("defs");
+    const clip = svgElement("clipPath", { id: clipId });
+    clip.appendChild(svgElement("circle", { cx: 0, cy: 0, r: SAGE_NETWORK_NODE_R - 5 }));
+    defs.appendChild(clip);
+
+    group.appendChild(
+      svgElement("circle", {
+        class: "node-ring",
+        cx: 0,
+        cy: 0,
+        r: SAGE_NETWORK_NODE_R,
+        style: `stroke: ${countryColor(person.country)}`
+      })
+    );
+    group.appendChild(
+      svgElement("image", {
+        href: avatarFor(person),
+        x: -(SAGE_NETWORK_NODE_R - 6),
+        y: -(SAGE_NETWORK_NODE_R - 6),
+        width: (SAGE_NETWORK_NODE_R - 6) * 2,
+        height: (SAGE_NETWORK_NODE_R - 6) * 2,
+        "clip-path": `url(#${clipId})`,
+        preserveAspectRatio: "xMidYMid slice"
+      })
+    );
+    const namePosition = sageNetworkNamePosition(position);
+    const name = svgElement("text", {
+      class: "sage-network-name",
+      x: namePosition.x,
+      y: namePosition.y,
+      "text-anchor": namePosition.anchor,
+      "dominant-baseline": "central"
+    });
+    name.textContent = person.name;
+    group.appendChild(name);
+    return group;
+  }
+
+  function sageNetworkNamePosition(position) {
+    const dx = position.x - SAGE_NETWORK_W / 2;
+    const dy = position.y - SAGE_NETWORK_H / 2;
+    const distance = Math.hypot(dx, dy) || 1;
+    const ux = dx / distance;
+    const uy = dy / distance;
+    const labelDistance = SAGE_NETWORK_NODE_R + 20;
+    let anchor = "middle";
+    if (ux > 0.32) anchor = "start";
+    if (ux < -0.32) anchor = "end";
+    return {
+      x: round2(ux * labelDistance),
+      y: round2(uy * labelDistance),
+      anchor
+    };
+  }
+
+  function createSageNetworkLabel(definition, point) {
+    const group = svgElement("g");
+    const labels = String(definition || "")
+      .split("、")
+      .filter(Boolean)
+      .slice(0, 3);
+    const text = svgElement("text", {
+      class: "sage-network-label",
+      x: round2(clamp(point.x, 64, SAGE_NETWORK_W - 64)),
+      y: round2(clamp(point.y, 44, SAGE_NETWORK_H - 44))
+    });
+    (labels.length ? labels : ["关系"]).forEach((label, index) => {
+      const tspan = svgElement("tspan", {
+        x: text.getAttribute("x"),
+        dy: index === 0 ? 0 : 18
+      });
+      tspan.textContent = label;
+      text.appendChild(tspan);
+    });
+    group.appendChild(text);
+    return group;
   }
 
   function exportJson(scope) {

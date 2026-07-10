@@ -508,6 +508,18 @@ tr:hover td {
   touch-action: none;
 }
 
+#sageNetworkGraph {
+  display: block;
+  width: 100%;
+  min-height: 760px;
+}
+
+.sage-network-wrap {
+  background:
+    radial-gradient(circle at center, rgba(176, 138, 54, 0.08) 0 1px, transparent 1px 100%),
+    #fffdf9;
+}
+
 .graph-empty {
   fill: var(--muted);
   font-size: 18px;
@@ -571,6 +583,71 @@ tr:hover td {
 
 .graph-node.center .graph-name {
   font-size: 20px;
+}
+
+.sage-network-link {
+  fill: none;
+  stroke: rgba(49, 95, 140, 0.42);
+  stroke-width: 1.45;
+  transition:
+    opacity 0.18s ease,
+    stroke 0.18s ease,
+    stroke-width 0.18s ease;
+}
+
+.sage-network-link.highlight {
+  stroke: #245f91;
+  stroke-width: 3;
+  opacity: 0.95;
+}
+
+.sage-network-link.dimmed {
+  opacity: 0.12;
+}
+
+.sage-network-node {
+  cursor: pointer;
+  transition: opacity 0.18s ease;
+}
+
+.sage-network-node.dimmed {
+  opacity: 0.22;
+}
+
+.sage-network-node circle.node-ring {
+  fill: #fff8ec;
+  stroke: var(--node-ring-color, var(--gold));
+  stroke-width: 3;
+}
+
+.sage-network-node.active circle.node-ring {
+  stroke-width: 5;
+}
+
+.sage-network-node.connected circle.node-ring {
+  stroke-width: 4;
+}
+
+.sage-network-name {
+  fill: var(--ink);
+  font-size: 15px;
+  font-weight: 800;
+  paint-order: stroke;
+  stroke: rgba(255, 253, 249, 0.9);
+  stroke-width: 4px;
+  stroke-linejoin: round;
+}
+
+.sage-network-label {
+  fill: #6b5222;
+  font-size: 14px;
+  font-weight: 800;
+  text-anchor: middle;
+  dominant-baseline: central;
+  paint-order: stroke;
+  stroke: rgba(255, 253, 249, 0.92);
+  stroke-width: 5px;
+  stroke-linejoin: round;
 }
 
 .toast {
@@ -655,5 +732,9 @@ tr:hover td {
 
   #relationGraph {
     min-height: 500px;
+  }
+
+  #sageNetworkGraph {
+    min-height: 560px;
   }
 }
