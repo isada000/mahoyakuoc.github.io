@@ -9,6 +9,8 @@
   const SAGE_NETWORK_W = 1000;
   const SAGE_NETWORK_H = 760;
   const SAGE_NETWORK_NODE_R = 38;
+  const SAGE_NETWORK_AVOID_R = SAGE_NETWORK_NODE_R + 22;
+  const SAGE_NETWORK_NEAR_R = SAGE_NETWORK_NODE_R + 46;
   const SUPABASE_URL = "https://pzxlsaulqmagxbcthrcg.supabase.co";
   const SUPABASE_PUBLISHABLE_KEY = "sb_publishable_q6YhjTTRGkR8KKUFuMkWow_TexC5-h-";
   const SUPABASE_AVATAR_BUCKET = "avatars";
@@ -1961,11 +1963,14 @@
       const isFocused =
         selectedSageNetworkId &&
         (relation.personAId === selectedSageNetworkId || relation.personBId === selectedSageNetworkId);
-      const line = sageNetworkLine(from, to);
+      const line = sageNetworkRoute(from, to, relation.personAId, relation.personBId, positions);
       const link = svgElement("path", {
         class: `sage-network-link${isFocused ? " highlight" : selectedSageNetworkId ? " dimmed" : ""}`,
         d: line.path,
-        "data-index": index
+        "data-index": index,
+        "data-relation-id": relation.id,
+        "data-from-id": relation.personAId,
+        "data-to-id": relation.personBId
       });
       linkLayer.appendChild(link);
       if (isFocused) {
@@ -2045,7 +2050,7 @@
     );
   }
 
-  function sageNetworkLine(from, to) {
+  function sageNetworkRoute(from, to, fromId, toId, positions) {
     const dx = to.x - from.x;
     const dy = to.y - from.y;
     const distance = Math.hypot(dx, dy) || 1;
@@ -2059,13 +2064,148 @@
       x: to.x - ux * (SAGE_NETWORK_NODE_R + 8),
       y: to.y - uy * (SAGE_NETWORK_NODE_R + 8)
     };
-    const label = {
-      x: (start.x + end.x) / 2,
-      y: (start.y + end.y) / 2
-    };
+    const obstacles = Object.entries(positions)
+      .filter(([id]) => id !== fromId && id !== toId)
+      .map(([id, point]) => ({ id, ...point }));
+    const candidates = [
+      sageNetworkLineCandidate(start, end),
+      ...sageNetworkCurveCandidates(start, end)
+    ];
+    return candidates
+      .map((candidate) => ({
+        ...candidate,
+        score: scoreSageNetworkRoute(candidate, obstacles)
+      }))
+      .sort((a, b) => a.score - b.score)[0];
+  }
+
+  function sageNetworkLineCandidate(start, end) {
+    const label = midpoint(start, end);
     return {
       path: `M ${round2(start.x)} ${round2(start.y)} L ${round2(end.x)} ${round2(end.y)}`,
-      label
+      label,
+      samples: sampleSageNetworkLine(start, end),
+      complexity: 0
+    };
+  }
+
+  function sageNetworkCurveCandidates(start, end) {
+    const mid = midpoint(start, end);
+    const dx = end.x - start.x;
+    const dy = end.y - start.y;
+    const distance = Math.hypot(dx, dy) || 1;
+    const normal = { x: -dy / distance, y: dx / distance };
+    const radial = unitVector({
+      x: mid.x - SAGE_NETWORK_W / 2,
+      y: mid.y - SAGE_NETWORK_H / 2
+    });
+    const controls = [];
+    const addControl = (x, y, complexity) => {
+      controls.push({
+        x: clamp(x, 32, SAGE_NETWORK_W - 32),
+        y: clamp(y, 38, SAGE_NETWORK_H - 38),
+        complexity
+      });
+    };
+
+    [70, 115, 165, 225].forEach((bend) => {
+      addControl(mid.x + normal.x * bend, mid.y + normal.y * bend, bend);
+      addControl(mid.x - normal.x * bend, mid.y - normal.y * bend, bend);
+    });
+    [90, 145, 210].forEach((bend) => {
+      addControl(mid.x + radial.x * bend, mid.y + radial.y * bend, bend + 18);
+      addControl(mid.x - radial.x * bend, mid.y - radial.y * bend, bend + 26);
+    });
+    [95, 150].forEach((bend) => {
+      addControl(mid.x + normal.x * bend + radial.x * 90, mid.y + normal.y * bend + radial.y * 90, bend + 90);
+      addControl(mid.x - normal.x * bend + radial.x * 90, mid.y - normal.y * bend + radial.y * 90, bend + 90);
+      addControl(mid.x + normal.x * bend - radial.x * 80, mid.y + normal.y * bend - radial.y * 80, bend + 96);
+      addControl(mid.x - normal.x * bend - radial.x * 80, mid.y - normal.y * bend - radial.y * 80, bend + 96);
+    });
+
+    return controls.map((control) => sageNetworkCurveCandidate(start, control, end));
+  }
+
+  function sageNetworkCurveCandidate(start, control, end) {
+    const label = quadraticPoint(start, control, end, 0.5);
+    return {
+      path: `M ${round2(start.x)} ${round2(start.y)} Q ${round2(control.x)} ${round2(control.y)} ${round2(end.x)} ${round2(end.y)}`,
+      label,
+      samples: sampleSageNetworkCurve(start, control, end),
+      complexity: control.complexity
+    };
+  }
+
+  function scoreSageNetworkRoute(candidate, obstacles) {
+    let score = candidate.complexity * 3;
+    for (const point of candidate.samples) {
+      score += sageNetworkBoundsPenalty(point);
+      for (const obstacle of obstacles) {
+        const distance = Math.hypot(point.x - obstacle.x, point.y - obstacle.y);
+        if (distance < SAGE_NETWORK_NODE_R + 8) {
+          score += 140000 + (SAGE_NETWORK_NODE_R + 8 - distance) * 2600;
+        } else if (distance < SAGE_NETWORK_AVOID_R) {
+          score += 24000 + Math.pow(SAGE_NETWORK_AVOID_R - distance, 2) * 120;
+        } else if (distance < SAGE_NETWORK_NEAR_R) {
+          score += Math.pow(SAGE_NETWORK_NEAR_R - distance, 2) * 8;
+        }
+      }
+    }
+    for (const obstacle of obstacles) {
+      const distance = Math.hypot(candidate.label.x - obstacle.x, candidate.label.y - obstacle.y);
+      if (distance < SAGE_NETWORK_NEAR_R + 16) {
+        score += Math.pow(SAGE_NETWORK_NEAR_R + 16 - distance, 2) * 14;
+      }
+    }
+    return score;
+  }
+
+  function sageNetworkBoundsPenalty(point) {
+    const overflowX = Math.max(0, 24 - point.x, point.x - (SAGE_NETWORK_W - 24));
+    const overflowY = Math.max(0, 30 - point.y, point.y - (SAGE_NETWORK_H - 30));
+    return (overflowX * overflowX + overflowY * overflowY) * 40;
+  }
+
+  function sampleSageNetworkLine(start, end) {
+    const samples = [];
+    for (let step = 1; step < 30; step += 1) {
+      const t = step / 30;
+      samples.push({
+        x: start.x + (end.x - start.x) * t,
+        y: start.y + (end.y - start.y) * t
+      });
+    }
+    return samples;
+  }
+
+  function sampleSageNetworkCurve(start, control, end) {
+    const samples = [];
+    for (let step = 1; step < 34; step += 1) {
+      samples.push(quadraticPoint(start, control, end, step / 34));
+    }
+    return samples;
+  }
+
+  function quadraticPoint(start, control, end, t) {
+    const oneMinus = 1 - t;
+    return {
+      x: oneMinus * oneMinus * start.x + 2 * oneMinus * t * control.x + t * t * end.x,
+      y: oneMinus * oneMinus * start.y + 2 * oneMinus * t * control.y + t * t * end.y
+    };
+  }
+
+  function midpoint(a, b) {
+    return {
+      x: (a.x + b.x) / 2,
+      y: (a.y + b.y) / 2
+    };
+  }
+
+  function unitVector(vector) {
+    const length = Math.hypot(vector.x, vector.y) || 1;
+    return {
+      x: vector.x / length,
+      y: vector.y / length
     };
   }
 
